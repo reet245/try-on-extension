@@ -53,7 +53,7 @@ export function ImageUploader({
       whileHover={{ scale: 1.01 }}
       whileTap={{ scale: 0.99 }}
     >
-      <input {...getInputProps()} />
+      <input {...getInputProps()} className="sr-only" />
       <div className="flex flex-col items-center gap-3 text-center">
         <div
           className={cn(

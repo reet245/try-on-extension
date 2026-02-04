@@ -3,6 +3,7 @@ import { useAppStore } from '@/lib/store/useAppStore';
 import { useHistoryStore } from '@/lib/store/useHistoryStore';
 import { generateTryOn, parseDataUrl } from '@/lib/api/gemini';
 import { saveTryOnResult, saveUserPhoto, saveClothingImage } from '@/lib/db';
+import { isR2Enabled, uploadToR2, addToResultsGallery } from '@/lib/storage/r2Storage';
 
 export function useTryOn() {
   const [result, setResult] = useState<string | null>(null);
@@ -76,6 +77,36 @@ export function useTryOn() {
 
           // Reload history
           await loadResults();
+
+          // Also upload result to R2 if enabled
+          const r2Enabled = await isR2Enabled();
+          if (r2Enabled) {
+            try {
+              const storedResult = await uploadToR2(resultDataUrl, 'result');
+              if (storedResult) {
+                // Create thumbnail for gallery
+                const thumbnailCanvas = document.createElement('canvas');
+                const img = new Image();
+                await new Promise<void>((resolve) => {
+                  img.onload = () => {
+                    const size = 200;
+                    const scale = Math.min(size / img.width, size / img.height);
+                    thumbnailCanvas.width = img.width * scale;
+                    thumbnailCanvas.height = img.height * scale;
+                    thumbnailCanvas.getContext('2d')?.drawImage(img, 0, 0, thumbnailCanvas.width, thumbnailCanvas.height);
+                    resolve();
+                  };
+                  img.src = resultDataUrl;
+                });
+                const thumbnail = thumbnailCanvas.toDataURL('image/jpeg', 0.6);
+                await addToResultsGallery(storedResult, thumbnail);
+                console.log('Result image backed up to R2');
+              }
+            } catch (r2Error) {
+              console.error('Failed to backup result to R2:', r2Error);
+              // Don't fail - local save already succeeded
+            }
+          }
         } catch (dbError) {
           console.error('Failed to save to history:', dbError);
           // Don't fail the whole operation if history save fails

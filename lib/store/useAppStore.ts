@@ -1,7 +1,22 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 
 export type ModelType = 'nano-banana' | 'nano-banana-pro';
+
+// Custom storage adapter for chrome.storage.local
+// This allows the background script to access the same storage as the sidepanel
+const chromeStorage = {
+  getItem: async (name: string): Promise<string | null> => {
+    const result = await browser.storage.local.get(name);
+    return result[name] ?? null;
+  },
+  setItem: async (name: string, value: string): Promise<void> => {
+    await browser.storage.local.set({ [name]: value });
+  },
+  removeItem: async (name: string): Promise<void> => {
+    await browser.storage.local.remove(name);
+  },
+};
 
 interface CapturedImage {
   dataUrl?: string; // Base64 data URL from content script
@@ -121,6 +136,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: 'try-on-storage',
+      storage: createJSONStorage(() => chromeStorage),
       // Persist user image and settings
       partialize: (state) => ({
         userImage: state.userImage, // Now persisting user image!

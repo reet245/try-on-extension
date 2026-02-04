@@ -23,23 +23,22 @@ export interface TryOnResponse {
 }
 
 function buildTryOnPrompt(): string {
-  return `You are a virtual try-on assistant. I'm providing two images:
+  return `Generate a SINGLE photorealistic image of the person from the first image wearing the clothing item from the second image.
 
-IMAGE 1: A photo of a person (the user)
-IMAGE 2: A clothing item
+IMPORTANT OUTPUT FORMAT:
+- Output EXACTLY ONE image
+- Do NOT create a side-by-side comparison
+- Do NOT show before/after
+- Do NOT show multiple views
+- Just ONE final result image
 
-YOUR TASK:
-Generate a realistic image of the SAME person from Image 1 wearing the clothing from Image 2.
+REQUIREMENTS:
+- Keep the person's face, body, pose, and background exactly the same as in Image 1
+- Only change/add the clothing from Image 2
+- Make the clothing fit naturally on the person's body
+- Maintain realistic lighting and shadows
 
-CRITICAL REQUIREMENTS:
-- PRESERVE the person's exact face, skin tone, hair, and body proportions
-- PRESERVE the person's pose and camera angle
-- The clothing should fit naturally on their body
-- Maintain realistic lighting, shadows, and fabric draping
-- Keep the original background or use a neutral background
-- The result should look like a real photograph, not AI-generated
-
-Generate the virtual try-on image now.`;
+Generate the single try-on result image now.`;
 }
 
 export async function generateTryOn(
@@ -200,12 +199,49 @@ export async function generateTryOn(
 
 // Helper to extract base64 and mime type from data URL
 export function parseDataUrl(dataUrl: string): { base64: string; mimeType: string } | null {
-  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-  if (!match) return null;
-  return {
-    mimeType: match[1],
-    base64: match[2],
-  };
+  if (!dataUrl || typeof dataUrl !== 'string') {
+    return null;
+  }
+
+  // Standard format: data:image/png;base64,xxxxx
+  const standardMatch = dataUrl.match(/^data:([^;,]+);base64,(.+)$/);
+  if (standardMatch) {
+    return {
+      mimeType: standardMatch[1],
+      base64: standardMatch[2],
+    };
+  }
+
+  // Alternative format without base64 marker (some browsers/sources)
+  const altMatch = dataUrl.match(/^data:([^;,]+),(.+)$/);
+  if (altMatch) {
+    // Check if it looks like base64
+    const data = altMatch[2];
+    if (/^[A-Za-z0-9+/=]+$/.test(data)) {
+      return {
+        mimeType: altMatch[1],
+        base64: data,
+      };
+    }
+  }
+
+  // Try to extract from blob URL converted to data URL
+  // Sometimes the format is just the base64 with a mime type prefix
+  if (dataUrl.startsWith('data:image/')) {
+    const parts = dataUrl.split(',');
+    if (parts.length === 2) {
+      const mimeMatch = parts[0].match(/data:([^;]+)/);
+      if (mimeMatch) {
+        return {
+          mimeType: mimeMatch[1],
+          base64: parts[1],
+        };
+      }
+    }
+  }
+
+  console.error('[parseDataUrl] Failed to parse data URL:', dataUrl.substring(0, 50) + '...');
+  return null;
 }
 
 // Validate API key format (basic check)

@@ -1,7 +1,14 @@
+import { ImageModalDetector, type DetectedImage } from './content/autoMode';
+import { getAutoModeEnabled } from '@/lib/store/useAutoModeStore';
+
+// Auto mode detector
+let detector: ImageModalDetector | null = null;
+let isProcessing = false;
+
 export default defineContentScript({
   matches: ['<all_urls>'],
-  main() {
-    // Listen for messages from background script to capture images
+  async main() {
+    // Listen for messages from background script
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === 'CAPTURE_IMAGE' && message.imageUrl) {
         captureImageAsBase64(message.imageUrl)
@@ -12,10 +19,27 @@ export default defineContentScript({
             console.error('Failed to capture image:', error);
             sendResponse({ success: false, error: error.message });
           });
-        // Return true to indicate we'll respond asynchronously
         return true;
       }
+
+      if (message.type === 'AUTO_MODE_CHANGED') {
+        handleAutoModeChange(message.enabled);
+        sendResponse({ success: true });
+        return false;
+      }
+
+      // Legacy handler - no longer showing inline panel, using popup window instead
+      if (message.type === 'AUTO_TRYON_RESULT') {
+        sendResponse({ success: true });
+        return false;
+      }
     });
+
+    // Check initial auto mode state
+    const autoModeEnabled = await getAutoModeEnabled();
+    if (autoModeEnabled) {
+      initializeAutoMode();
+    }
 
     console.log('Virtual Try-On content script loaded');
   },
@@ -37,18 +61,73 @@ async function captureImageAsBase64(imageUrl: string): Promise<string> {
   }
 
   // Fallback: fetch the image
-  const response = await fetch(imageUrl, { mode: 'cors', credentials: 'omit' });
-  if (!response.ok) {
-    throw new Error(`Failed to fetch image: ${response.status}`);
+  return fetchImageAsDataUrl(imageUrl);
+}
+
+async function fetchImageAsDataUrl(imageUrl: string): Promise<string> {
+  try {
+    // Try with CORS first
+    let response = await fetch(imageUrl, { mode: 'cors', credentials: 'omit' });
+
+    // If CORS fails, try without
+    if (!response.ok) {
+      response = await fetch(imageUrl, { credentials: 'include' });
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.status}`);
+    }
+
+    const blob = await response.blob();
+
+    // Normalize format if needed
+    const normalizedBlob = await normalizeImageFormat(blob);
+
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        if (result && result.match(/^data:image\/[^;]+;base64,/)) {
+          resolve(result);
+        } else {
+          reject(new Error('Invalid data URL format'));
+        }
+      };
+      reader.onerror = () => reject(new Error('Failed to read blob'));
+      reader.readAsDataURL(normalizedBlob);
+    });
+  } catch (error) {
+    throw new Error(`Failed to fetch image: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+async function normalizeImageFormat(blob: Blob): Promise<Blob> {
+  // If it's already a standard format, return as-is
+  if (['image/jpeg', 'image/png'].includes(blob.type)) {
+    return blob;
   }
 
-  const blob = await response.blob();
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(new Error('Failed to read blob'));
-    reader.readAsDataURL(blob);
-  });
+  // Convert to PNG using canvas
+  try {
+    const imageBitmap = await createImageBitmap(blob);
+    const canvas = document.createElement('canvas');
+    canvas.width = imageBitmap.width;
+    canvas.height = imageBitmap.height;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return blob;
+
+    ctx.drawImage(imageBitmap, 0, 0);
+
+    return new Promise((resolve) => {
+      canvas.toBlob((newBlob) => {
+        resolve(newBlob || blob);
+      }, 'image/png');
+    });
+  } catch (e) {
+    console.error('Failed to normalize image format:', e);
+    return blob;
+  }
 }
 
 function imageElementToDataUrl(img: HTMLImageElement): Promise<string> {
@@ -84,11 +163,78 @@ function drawToCanvas(
     // Try to get data URL - this will fail if image is cross-origin without CORS
     try {
       const dataUrl = canvas.toDataURL('image/png');
-      resolve(dataUrl);
+      if (dataUrl && dataUrl.startsWith('data:image/')) {
+        resolve(dataUrl);
+      } else {
+        reject(new Error('Invalid canvas data URL'));
+      }
     } catch (e) {
       reject(new Error('Canvas tainted by cross-origin data'));
     }
   } catch (e) {
     reject(new Error('Failed to draw image to canvas'));
+  }
+}
+
+// ==================== Auto Mode Functions ====================
+
+function initializeAutoMode(): void {
+  if (detector) return;
+
+  detector = new ImageModalDetector(handleEnlargedImageDetected);
+  detector.enable();
+  console.log('[AutoMode] Initialized');
+}
+
+function handleAutoModeChange(enabled: boolean): void {
+  if (enabled) {
+    initializeAutoMode();
+  } else {
+    if (detector) {
+      detector.disable();
+      detector = null;
+    }
+    isProcessing = false;
+    console.log('[AutoMode] Disabled');
+  }
+}
+
+async function handleEnlargedImageDetected(image: DetectedImage): Promise<void> {
+  // Prevent multiple simultaneous processing
+  if (isProcessing) {
+    console.log('[AutoMode] Already processing, skipping');
+    return;
+  }
+
+  isProcessing = true;
+  console.log('[AutoMode] Enlarged image detected:', image.source, 'Size:', image.width, 'x', image.height);
+
+  try {
+    // Validate the data URL format before sending
+    if (!image.dataUrl || !image.dataUrl.match(/^data:image\/[^;]+;base64,/)) {
+      console.error('[AutoMode] Invalid data URL format');
+      isProcessing = false;
+      return;
+    }
+
+    // Send to background script for processing
+    // The background script will handle showing the popup window
+    const response = await browser.runtime.sendMessage({
+      type: 'AUTO_TRYON',
+      clothingImage: image.dataUrl,
+    });
+
+    if (!response.success) {
+      console.error('[AutoMode] Try-on failed:', response.error);
+    } else {
+      console.log('[AutoMode] Try-on successful');
+    }
+  } catch (error) {
+    console.error('[AutoMode] Error sending to background:', error);
+  } finally {
+    // Add a small delay before allowing next processing
+    setTimeout(() => {
+      isProcessing = false;
+    }, 1000);
   }
 }

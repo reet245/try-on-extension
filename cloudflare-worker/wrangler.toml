@@ -1,0 +1,12 @@
+name = "tryon-image-storage"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# R2 bucket binding
+[[r2_buckets]]
+binding = "IMAGES_BUCKET"
+bucket_name = "tryon-images"
+
+# Environment variables (set these in Cloudflare dashboard)
+# [vars]
+# ALLOWED_ORIGINS = "chrome-extension://your-extension-id"
